@@ -274,7 +274,6 @@ locktest(int nargs, char **args)
 	}
 	spinlock_init(&status_lock);
 	test_status = TEST161_SUCCESS;
-
 	for (i=0; i<NTHREADS; i++) {
 		kprintf_t(".");
 		result = thread_fork("synchtest", NULL, locktestthread, NULL, i);
@@ -283,10 +282,11 @@ locktest(int nargs, char **args)
 		}
 	}
 	for (i=0; i<NTHREADS; i++) {
+		kprintf_n("Teste\n");
 		kprintf_t(".");
 		P(donesem);
 	}
-
+	kprintf_n("Im here\n");
 	lock_destroy(testlock);
 	sem_destroy(donesem);
 	testlock = NULL;
