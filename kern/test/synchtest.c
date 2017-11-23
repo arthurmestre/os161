@@ -47,7 +47,7 @@
 #define NSEMLOOPS     63
 #define NLOCKLOOPS    120
 #define NCVLOOPS      5
-#define NTHREADS      32
+#define NTHREADS      3
 #define SYNCHTEST_YIELDER_MAX 16
 
 static volatile unsigned long testval1;
@@ -227,7 +227,6 @@ locktestthread(void *junk, unsigned long num)
 		lock_release(testlock);
 		KASSERT(!(lock_do_i_hold(testlock)));
 	}
-
 	/* Check for solutions that don't track ownership properly */
 
 	for (i=0; i<NLOCKLOOPS; i++) {
@@ -282,11 +281,10 @@ locktest(int nargs, char **args)
 		}
 	}
 	for (i=0; i<NTHREADS; i++) {
-		kprintf_n("Teste\n");
 		kprintf_t(".");
 		P(donesem);
+		kprintf_n("Hello, there\n");
 	}
-	kprintf_n("Im here\n");
 	lock_destroy(testlock);
 	sem_destroy(donesem);
 	testlock = NULL;
@@ -465,7 +463,6 @@ void
 cvtestthread(void *junk, unsigned long num)
 {
 	(void)junk;
-
 	int i;
 	volatile int j;
 	struct timespec ts1, ts2;
@@ -477,7 +474,9 @@ cvtestthread(void *junk, unsigned long num)
 			testval2 = 0;
 			random_yielder(4);
 			gettime(&ts1);
+//			kprintf_n("%d\n", lock_do_i_hold(testlock));
 			cv_wait(testcv, testlock);
+			kprintf_n("i can actually get here");
 			gettime(&ts2);
 			random_yielder(4);
 

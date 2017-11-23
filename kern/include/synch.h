@@ -118,6 +118,8 @@ bool lock_do_i_hold(struct lock *);
 
 struct cv {
         char *cv_name;
+	struct wchan *wait_channel;
+	struct spinlock lk;
         // add what you need here
         // (don't forget to mark things volatile as needed)
 };
@@ -154,7 +156,14 @@ void cv_broadcast(struct cv *cv, struct lock *lock);
 
 struct rwlock {
         char *rwlock_name;
-        // add what you need here
+        struct cv *okToRead;
+	struct cv *okToWrite;
+	int ww; //waiting writers
+	int aw; //active writers
+	int wr; //waiting readers
+	int ar; //active readers
+	struct lock *lock;
+ // add what you need here
         // (don't forget to mark things volatile as needed)
 };
 
