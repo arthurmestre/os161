@@ -55,6 +55,7 @@ void wchan_destroy(struct wchan *wc);
  * This is meant to be used only for diagnostic purposes.
  */
 bool wchan_isempty(struct wchan *wc, struct spinlock *lk);
+bool wchan_isempty1(struct wchan *wc);
 
 /*
  * Go to sleep on a wait channel. The current thread is suspended
@@ -65,6 +66,7 @@ bool wchan_isempty(struct wchan *wc, struct spinlock *lk);
  * sleeping, and relocked upon return.
  */
 void wchan_sleep(struct wchan *wc, struct spinlock *lk);
+void wchan_sleep1(struct wchan *wc);
 
 /*
  * Wake up one thread, or all threads, sleeping on a wait channel.
@@ -75,6 +77,8 @@ void wchan_sleep(struct wchan *wc, struct spinlock *lk);
  */
 void wchan_wakeone(struct wchan *wc, struct spinlock *lk);
 void wchan_wakeall(struct wchan *wc, struct spinlock *lk);
+void wchan_wakeall1(struct wchan *wc);
+void wchan_wakeone1(struct wchan *wc);
 
 
 #endif /* _WCHAN_H_ */

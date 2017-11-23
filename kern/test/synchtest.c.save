@@ -466,7 +466,6 @@ cvtestthread(void *junk, unsigned long num)
 	int i;
 	volatile int j;
 	struct timespec ts1, ts2;
-	kprintf_n("do i get here?\n");
 	for (i=0; i<NCVLOOPS; i++) {
 		kprintf_t(".");
 		lock_acquire(testlock);

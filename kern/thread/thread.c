@@ -744,6 +744,176 @@ thread_switch(threadstate_t newstate, struct wchan *wc, struct spinlock *lk)
 	splx(spl);
 }
 
+static
+void
+thread_switch1(threadstate_t newstate, struct wchan *wc)
+{
+	struct thread *cur, *next;
+	int spl;
+
+	DEBUGASSERT(curcpu->c_curthread == curthread);
+	DEBUGASSERT(curthread->t_cpu == curcpu->c_self);
+
+	/* Explicitly disable interrupts on this processor */
+	spl = splhigh();
+
+	cur = curthread;
+
+	/*
+	 * If we're idle, return without doing anything. This happens
+	 * when the timer interrupt interrupts the idle loop.
+	 */
+	if (curcpu->c_isidle) {
+		splx(spl);
+		return;
+	}
+
+	/* Check the stack guard band. */
+	thread_checkstack(cur);
+
+	/* Lock the run queue. */
+	spinlock_acquire(&curcpu->c_runqueue_lock);
+
+	/* Micro-optimization: if nothing to do, just return */
+	if (newstate == S_READY && threadlist_isempty(&curcpu->c_runqueue)) {
+		spinlock_release(&curcpu->c_runqueue_lock);
+		splx(spl);
+		return;
+	}
+
+	/* Put the thread in the right place. */
+	switch (newstate) {
+	    case S_RUN:
+		panic("Illegal S_RUN in thread_switch\n");
+	    case S_READY:
+		thread_make_runnable(cur, true /*have lock*/);
+		break;
+	    case S_SLEEP:
+		cur->t_wchan_name = wc->wc_name;
+		/*
+		 * Add the thread to the list in the wait channel, and
+		 * unlock same. To avoid a race with someone else
+		 * calling wchan_wake*, we must keep the wchan's
+		 * associated spinlock locked from the point the
+		 * caller of wchan_sleep locked it until the thread is
+		 * on the list.
+		 */
+		threadlist_addtail(&wc->wc_threads, cur);
+		//spinlock_release(lk);
+		break;
+	    case S_ZOMBIE:
+		cur->t_wchan_name = "ZOMBIE";
+		threadlist_addtail(&curcpu->c_zombies, cur);
+		break;
+	}
+	cur->t_state = newstate;
+
+	/*
+	 * Get the next thread. While there isn't one, call cpu_idle().
+	 * curcpu->c_isidle must be true when cpu_idle is
+	 * called. Unlock the runqueue while idling too, to make sure
+	 * things can be added to it.
+	 *
+	 * Note that we don't need to unlock the runqueue atomically
+	 * with idling; becoming unidle requires receiving an
+	 * interrupt (either a hardware interrupt or an interprocessor
+	 * interrupt from another cpu posting a wakeup) and idling
+	 * *is* atomic with respect to re-enabling interrupts.
+	 *
+	 * Note that c_isidle becomes true briefly even if we don't go
+	 * idle. However, because one is supposed to hold the runqueue
+	 * lock to look at it, this should not be visible or matter.
+	 */
+
+	/* The current cpu is now idle. */
+	curcpu->c_isidle = true;
+	do {
+		next = threadlist_remhead(&curcpu->c_runqueue);
+		if (next == NULL) {
+			spinlock_release(&curcpu->c_runqueue_lock);
+			cpu_idle();
+			spinlock_acquire(&curcpu->c_runqueue_lock);
+		}
+	} while (next == NULL);
+	curcpu->c_isidle = false;
+
+	/*
+	 * Note that curcpu->c_curthread may be the same variable as
+	 * curthread and it may not be, depending on how curthread and
+	 * curcpu are defined by the MD code. We'll assign both and
+	 * assume the compiler will optimize one away if they're the
+	 * same.
+	 */
+	curcpu->c_curthread = next;
+	curthread = next;
+
+	/* do the switch (in assembler in switch.S) */
+	switchframe_switch(&cur->t_context, &next->t_context);
+
+	/*
+	 * When we get to this point we are either running in the next
+	 * thread, or have come back to the same thread again,
+	 * depending on how you look at it. That is,
+	 * switchframe_switch returns immediately in another thread
+	 * context, which in general will be executing here with a
+	 * different stack and different values in the local
+	 * variables. (Although new threads go to thread_startup
+	 * instead.) But, later on when the processor, or some
+	 * processor, comes back to the previous thread, it's also
+	 * executing here with the *same* value in the local
+	 * variables.
+	 *
+	 * The upshot, however, is as follows:
+	 *
+	 *    - The thread now currently running is "cur", not "next",
+	 *      because when we return from switchrame_switch on the
+	 *      same stack, we're back to the thread that
+	 *      switchframe_switch call switched away from, which is
+	 *      "cur".
+	 *
+	 *    - "cur" is _not_ the thread that just *called*
+	 *      switchframe_switch.
+	 *
+	 *    - If newstate is S_ZOMB we never get back here in that
+	 *      context at all.
+	 *
+	 *    - If the thread just chosen to run ("next") was a new
+	 *      thread, we don't get to this code again until
+	 *      *another* context switch happens, because when new
+	 *      threads return from switchframe_switch they teleport
+	 *      to thread_startup.
+	 *
+	 *    - At this point the thread whose stack we're now on may
+	 *      have been migrated to another cpu since it last ran.
+	 *
+	 * The above is inherently confusing and will probably take a
+	 * while to get used to.
+	 *
+	 * However, the important part is that code placed here, after
+	 * the call to switchframe_switch, does not necessarily run on
+	 * every context switch. Thus any such code must be either
+	 * skippable on some switches or also called from
+	 * thread_startup.
+	 */
+
+
+	/* Clear the wait channel and set the thread state. */
+	cur->t_wchan_name = NULL;
+	cur->t_state = S_RUN;
+
+	/* Unlock the run queue. */
+	spinlock_release(&curcpu->c_runqueue_lock);
+
+	/* Activate our address space in the MMU. */
+	as_activate();
+
+	/* Clean up dead threads. */
+	exorcise();
+
+	/* Turn interrupts back on. */
+	splx(spl);
+}
+
 /*
  * This function is where new threads start running. The arguments
  * ENTRYPOINT, DATA1, and DATA2 are passed through from thread_fork.
@@ -1044,6 +1214,18 @@ wchan_sleep(struct wchan *wc, struct spinlock *lk)
 	spinlock_acquire(lk);
 }
 
+void
+wchan_sleep1(struct wchan *wc)
+{
+	/* may not sleep in an interrupt handler */
+	KASSERT(!curthread->t_in_interrupt);
+
+	/* must not hold other spinlocks */
+	//KASSERT(curcpu->c_spinlocks == 1);
+
+	thread_switch1(S_SLEEP, wc);
+}
+
 /*
  * Wake up one thread sleeping on a wait channel.
  */
@@ -1053,6 +1235,31 @@ wchan_wakeone(struct wchan *wc, struct spinlock *lk)
 	struct thread *target;
 
 	KASSERT(spinlock_do_i_hold(lk));
+
+	/* Grab a thread from the channel */
+	target = threadlist_remhead(&wc->wc_threads);
+
+	if (target == NULL) {
+		/* Nobody was sleeping. */
+		return;
+	}
+
+	/*
+	 * Note that thread_make_runnable acquires a runqueue lock
+	 * while we're holding LK. This is ok; all spinlocks
+	 * associated with wchans must come before the runqueue locks,
+	 * as we also bridge from the wchan lock to the runqueue lock
+	 * in thread_switch.
+	 */
+
+	thread_make_runnable(target, false);
+}
+
+void
+wchan_wakeone1(struct wchan *wc)
+{
+	struct thread *target;
+
 
 	/* Grab a thread from the channel */
 	target = threadlist_remhead(&wc->wc_threads);
@@ -1106,6 +1313,34 @@ wchan_wakeall(struct wchan *wc, struct spinlock *lk)
 	threadlist_cleanup(&list);
 }
 
+void
+wchan_wakeall1(struct wchan *wc)
+{
+	struct thread *target;
+	struct threadlist list;
+
+	threadlist_init(&list);
+
+	/*
+	 * Grab all the threads from the channel, moving them to a
+	 * private list.
+	 */
+	while ((target = threadlist_remhead(&wc->wc_threads)) != NULL) {
+		threadlist_addtail(&list, target);
+	}
+
+	/*
+	 * We could conceivably sort by cpu first to cause fewer lock
+	 * ops and fewer IPIs, but for now at least don't bother. Just
+	 * make each thread runnable.
+	 */
+	while ((target = threadlist_remhead(&list)) != NULL) {
+		thread_make_runnable(target, false);
+	}
+
+	threadlist_cleanup(&list);
+}
+
 /*
  * Return nonzero if there are no threads sleeping on the channel.
  * This is meant to be used only for diagnostic purposes.
@@ -1116,6 +1351,16 @@ wchan_isempty(struct wchan *wc, struct spinlock *lk)
 	bool ret;
 
 	KASSERT(spinlock_do_i_hold(lk));
+	ret = threadlist_isempty(&wc->wc_threads);
+
+	return ret;
+}
+
+bool
+wchan_isempty1(struct wchan *wc)
+{
+	bool ret;
+
 	ret = threadlist_isempty(&wc->wc_threads);
 
 	return ret;
