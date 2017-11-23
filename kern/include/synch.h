@@ -162,7 +162,7 @@ struct rwlock {
 	int aw; //active writers
 	int wr; //waiting readers
 	int ar; //active readers
-	struct lock *lock;
+	struct lock *sleep_lock;
  // add what you need here
         // (don't forget to mark things volatile as needed)
 };

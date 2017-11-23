@@ -323,3 +323,117 @@ cv_broadcast(struct cv *cv, struct lock *lock)
 	wchan_wakeall1(cv->wait_channel);
 //	lock_release(lock);
 }
+
+
+struct rwlock * rwlock_create(const char *name){
+	
+	struct rwlock *rwlock;
+
+	rwlock = kmalloc(sizeof(*rwlock));
+	if (rwlock == NULL) {
+		return NULL;
+	}
+
+	rwlock->rwlock_name = kstrdup(name);
+	if (rwlock->rwlock_name == NULL) {
+		kfree(rwlock);
+		return NULL;
+	}
+
+	rwlock->sleep_lock = lock_create(name);
+	if(rwlock->sleep_lock == NULL){
+		kfree(rwlock->rwlock_name);
+		kfree(rwlock);
+		return NULL;	
+	}
+
+	rwlock->okToRead = cv_create(name);
+
+	if(rwlock->okToRead == NULL){
+		kfree(rwlock->rwlock_name);
+		kfree(rwlock->sleep_lock);
+		kfree(rwlock);
+		return NULL;	
+	}
+
+	rwlock->okToWrite = cv_create(name);
+
+	if(rwlock->okToWrite == NULL){
+		kfree(rwlock->rwlock_name);
+		kfree(rwlock->sleep_lock);
+		cv_destroy(rwlock->okToRead);
+		kfree(rwlock);
+		return NULL;	
+	}
+
+	rwlock->ww = 0;
+	rwlock->wr = 0;
+	rwlock->ar = 0;
+	rwlock->aw = 0;
+
+	return rwlock;
+}
+
+void rwlock_destroy(struct rwlock *rwlock){
+	KASSERT(rwlock != NULL);
+	lock_acquire(rwlock->sleep_lock);
+	if(rwlock->aw == 0 && rwlock->ar == 0 && rwlock->ww == 0 && rwlock->wr == 0){
+		lock_destroy(rwlock->sleep_lock);
+		cv_destroy(rwlock->okToRead);
+		cv_destroy(rwlock->okToWrite);
+		kfree(rwlock);
+	}
+}
+
+void rwlock_acquire_read(struct rwlock *rwlock){
+	KASSERT(rwlock != NULL);
+	
+	lock_acquire(rwlock->sleep_lock);
+	while(rwlock->aw > 0){
+		rwlock->wr++;
+		cv_wait(rwlock->okToRead, rwlock->sleep_lock);
+		rwlock->wr--;
+	}
+
+	rwlock->ar++;
+	lock_release(rwlock->sleep_lock);
+}
+void rwlock_release_read(struct rwlock *rwlock){
+	KASSERT(rwlock != NULL);
+	lock_acquire(rwlock->sleep_lock);
+
+	rwlock->ar--;
+	
+	if(rwlock->ar == 0 && rwlock->ww > 0){
+		cv_signal(rwlock->okToWrite, rwlock->sleep_lock);
+	}
+	lock_release(rwlock->sleep_lock);
+
+}
+void rwlock_acquire_write(struct rwlock *rwlock){
+	KASSERT(rwlock != NULL);
+	
+	lock_acquire(rwlock->sleep_lock);
+	while(rwlock->ar + rwlock->aw > 0){
+		rwlock->ww++;
+		cv_wait(rwlock->okToWrite, rwlock->sleep_lock);
+		rwlock->ww--;
+	}
+	rwlock->ww++;
+	lock_release(rwlock->sleep_lock);
+}
+void rwlock_release_write(struct rwlock *rwlock){
+	KASSERT(rwlock != NULL);
+
+	lock_acquire(rwlock->sleep_lock);
+	
+	rwlock->aw--;
+
+	if(rwlock->ww > 0){
+		cv_signal(rwlock->okToWrite, rwlock->sleep_lock);
+	}else if(rwlock->wr > 0){
+		cv_broadcast(rwlock->okToRead, rwlock->sleep_lock);
+	}
+
+	lock_release(rwlock->sleep_lock);
+}
